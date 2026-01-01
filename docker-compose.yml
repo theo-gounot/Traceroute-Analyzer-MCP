@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    container_name: traceroute-analyser
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8000
+    # Allow accessing the host machine via 'host.docker.internal'
+    # This is useful if your database is running on localhost outside docker
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
