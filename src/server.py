@@ -37,7 +37,7 @@ analyzer = TracerouteAnalyzer(get_db_connection)
 # --- SQL Helper Tools ---
 
 @mcp.tool()
-def list_tables() -> str:
+def list_traceroute_tables() -> str:
     """List all available tables in the public schema of the database."""
     logger.info("Tool called: list_tables")
     try:
@@ -55,7 +55,7 @@ def list_tables() -> str:
         return f"Error listing tables: {str(e)}"
 
 @mcp.tool()
-def describe_table(table_name: str) -> str:
+def describe_traceroute_table(table_name: str) -> str:
     """Get the column names, types, and a few sample rows for a specific table."""
     logger.info(f"Tool called: describe_table (table={table_name})")
     try:
