@@ -39,83 +39,87 @@ class TracerouteAnalyzer:
                 df = pd.read_sql(query, conn, params=(test_uuid,))
         except Exception as e:
             logger.error(f"Database error in get_enriched_path: {e}")
-            return []
+            return pd.DataFrame()
 
         if df.empty:
-            return []
+            return pd.DataFrame()
 
-        enriched_path = []
-        previous_hop = None
+        # 1. Private IP Check
+        df['is_private'] = df['ip_address'].apply(self._is_private_ip)
 
-        for _, row in df.iterrows():
-            ip = row["ip_address"]
-            is_private = self._is_private_ip(ip)
-            
-            hop_data = {
-                "ttl": int(row["ttl"]),
-                "ip_address": ip,
-                "rtt_ms": float(row["rtt_ms"]) if pd.notna(row["rtt_ms"]) else 0.0,
-                "is_private": is_private,
-                "metadata": {}
-            }
+        # 2. RTT Spike
+        # Calculate difference, round to 2 decimals. Handle first row (NaN) by filling with 0 or keeping NaN.
+        # Logic matches old: diff between curr and prev.
+        df['rtt_spike_ms'] = df['rtt_ms'].diff().round(2)
 
-            if pd.notna(row["city"]):
-                hop_data["metadata"] = {
-                    "city": row["city"],
-                    "country": row["country_name"],
-                    "isp": row["isp"],
-                    "asn": row["asn_name"],
-                    "latitude": row["latitude"],
-                    "longitude": row["longitude"]
-                }
-            
-            analysis = {}
-            if previous_hop:
-                curr_rtt = hop_data["rtt_ms"]
-                prev_rtt = previous_hop["rtt_ms"]
-                # Only calculate spike if both have valid RTT
-                if curr_rtt is not None and prev_rtt is not None:
-                    rtt_diff = curr_rtt - prev_rtt
-                    analysis["rtt_spike_ms"] = round(rtt_diff, 2)
-                
-                prev_meta = previous_hop.get("metadata", {})
-                curr_meta = hop_data.get("metadata", {})
-                
-                if prev_meta and curr_meta:
-                    if prev_meta.get("country") != curr_meta.get("country"):
-                         analysis["geographic_jump"] = f"{prev_meta.get('country')} -> {curr_meta.get('country')}"
+        # 3. Geographic Jump
+        df['prev_country'] = df['country_name'].shift()
+        
+        def calculate_jump(row):
+            if pd.notna(row['country_name']) and pd.notna(row['prev_country']):
+                if row['country_name'] != row['prev_country']:
+                    return f"{row['prev_country']} -> {row['country_name']}"
+            return ""
 
-            hop_data["analysis"] = analysis
-            enriched_path.append(hop_data)
-            previous_hop = hop_data
+        df['geographic_jump'] = df.apply(calculate_jump, axis=1)
 
-        return enriched_path
+        # Select and Rename Columns
+        output_columns = {
+            'ttl': 'ttl',
+            'ip_address': 'ip_address',
+            'rtt_ms': 'rtt_ms',
+            'is_private': 'is_private',
+            'city': 'city',
+            'country_name': 'country',
+            'isp': 'isp',
+            'asn_name': 'asn',
+            'latitude': 'latitude',
+            'longitude': 'longitude',
+            'rtt_spike_ms': 'rtt_spike_ms',
+            'geographic_jump': 'geographic_jump'
+        }
+        
+        # Ensure all columns exist (some might be missing from query if schema changed, but here we defined query)
+        # Filter to only desired columns
+        df_out = df[list(output_columns.keys())].rename(columns=output_columns)
+        
+        return df_out
 
     def generate_topology(self, test_uuid):
-        path = self.get_enriched_path(test_uuid)
-        if not path:
+        # We need the DataFrame here. `get_enriched_path` now returns a DF.
+        df = self.get_enriched_path(test_uuid)
+        if df.empty:
             return "graph LR\n    Start --> End"
 
         mermaid_lines = ["graph LR"]
-        for hop in path:
-            node_id = f"hop_{hop['ttl']}"
+        
+        # Iterate over DataFrame
+        for _, hop in df.iterrows():
+            node_id = f"hop_{int(hop['ttl'])}"
             label = hop['ip_address']
             if hop['is_private']:
                 label += "\\n(Private)"
-            elif hop['metadata']:
-                city = hop['metadata'].get('city') or "Unknown City"
-                country = hop['metadata'].get('country') or "Unknown Country"
-                isp = hop['metadata'].get('isp') or "Unknown ISP"
+            elif pd.notna(hop['city']) or pd.notna(hop['country']):
+                city = hop['city'] if pd.notna(hop['city']) else "Unknown City"
+                country = hop['country'] if pd.notna(hop['country']) else "Unknown Country"
+                isp = hop['isp'] if pd.notna(hop['isp']) else "Unknown ISP"
                 label = f"{city}, {country}\\n{isp}"
             
             # Escape quotes in label
             label = label.replace('"', "'")
             mermaid_lines.append(f'    {node_id}["{label}"]')
 
-        for i in range(len(path) - 1):
-            u = f"hop_{path[i]['ttl']}"
-            v = f"hop_{path[i+1]['ttl']}"
-            weight = path[i+1]['rtt_ms']
+        # Edges
+        # We need access to next hop's RTT. 
+        # In the loop, we can look ahead? Or just zip.
+        # Converting to list of dicts for easy iteration might be simplest for this specific legacy function,
+        # or just iterate index.
+        
+        records = df.to_dict('records')
+        for i in range(len(records) - 1):
+            u = f"hop_{int(records[i]['ttl'])}"
+            v = f"hop_{int(records[i+1]['ttl'])}"
+            weight = records[i+1]['rtt_ms']
             mermaid_lines.append(f"    {u} -- {weight}ms --> {v}")
 
         return "\n".join(mermaid_lines)
@@ -138,11 +142,14 @@ class TracerouteAnalyzer:
                 df = pd.read_sql(query, conn, params=(test_uuid,))
         except Exception as e:
             logger.error(f"Database error in detect_anomalies: {e}")
-            return []
+            return pd.DataFrame()
             
-        anomalies = []
-        for _, row in df.iterrows():
+        if df.empty:
+            return pd.DataFrame()
+
+        def get_reasons(row):
             reasons = []
+            # Check for truthiness (handling booleans or 1/0 or strings)
             if row.get("threat_is_datacenter") in [True, 1, 'true', 'True']:
                 reasons.append("High Probability of Datacenter/Proxy (threat_is_datacenter=True)")
             
@@ -151,12 +158,15 @@ class TracerouteAnalyzer:
 
             if row.get("threat_is_proxy") in [True, 1, 'true', 'True']:
                 reasons.append("Known Public Proxy (threat_is_proxy=True)")
-            
-            if reasons:
-                anomalies.append({
-                    "ttl": int(row["ttl"]),
-                    "ip_address": row["ip_address"],
-                    "asn": row.get("asn_name"),
-                    "reasons": reasons
-                })
-        return anomalies
+            return "; ".join(reasons)
+
+        df['reasons'] = df.apply(get_reasons, axis=1)
+        
+        # Filter rows with anomalies
+        anomalies_df = df[df['reasons'] != ""].copy()
+        
+        # Select columns
+        output_cols = ['ttl', 'ip_address', 'asn_name', 'reasons']
+        anomalies_df = anomalies_df[output_cols].rename(columns={'asn_name': 'asn'})
+        
+        return anomalies_df

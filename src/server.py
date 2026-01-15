@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from analyzer import TracerouteAnalyzer
 from database import init_db_pool, get_db_connection
+from utils import to_toon
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -76,10 +77,7 @@ def describe_traceroute_table(table_name: str) -> str:
             query_sample = f"SELECT * FROM {table_name} LIMIT 3"
             df_sample = pd.read_sql(query_sample, conn)
         
-        return json.dumps({
-            "columns": df_cols.to_dict(orient="records"),
-            "sample_data": df_sample.to_dict(orient="records")
-        }, default=str)
+        return f"Columns:\n{to_toon(df_cols)}\n\nSample Data:\n{to_toon(df_sample)}"
     except Exception as e:
         logger.error(f"Error in describe_table: {e}")
         return f"Error describing table {table_name}: {str(e)}"
@@ -96,11 +94,18 @@ def path_enrichment(test_uuids: list[str]) -> str:
     if isinstance(test_uuids, str):
         test_uuids = [test_uuids]
 
-    results = {}
+    dfs = []
     for uuid in test_uuids:
-        results[uuid] = analyzer.get_enriched_path(uuid)
+        df = analyzer.get_enriched_path(uuid)
+        if not df.empty:
+            df.insert(0, 'test_uuid', uuid)
+            dfs.append(df)
 
-    return json.dumps(results, indent=2)
+    if not dfs:
+        return "No data found."
+
+    combined_df = pd.concat(dfs, ignore_index=True)
+    return to_toon(combined_df)
 
 @mcp.tool()
 def topology_visualization(test_uuid: str) -> str:
@@ -116,8 +121,8 @@ def anomaly_detection(test_uuid: str) -> str:
     Audit the route for security and policy violations. Detects 'boomerang' routing (traffic leaving the country), unauthorized Datacenter/Proxy usage
     and unexpected ASN handoffs. Returns a list of flagged hops.
     """
-    anomalies = analyzer.detect_anomalies(test_uuid)
-    return json.dumps(anomalies, indent=2)
+    df_anomalies = analyzer.detect_anomalies(test_uuid)
+    return to_toon(df_anomalies)
 
 # --- Prompts ---
 
