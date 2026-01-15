@@ -125,7 +125,9 @@ class TracerouteAnalyzer:
             SELECT 
                 t.ttl, t.ip_address,
                 g.asn_name, g.asn_type,
-                g.threat_is_datacenter
+                g.threat_is_datacenter,
+                g.threat_is_tor,
+                g.threat_is_proxy
             FROM traceroute t
             LEFT JOIN ip_geolocation g ON t.ip_address = g.ip_address
             WHERE t.ndt_test_uuid = %s
@@ -143,6 +145,12 @@ class TracerouteAnalyzer:
             reasons = []
             if row.get("threat_is_datacenter") in [True, 1, 'true', 'True']:
                 reasons.append("High Probability of Datacenter/Proxy (threat_is_datacenter=True)")
+            
+            if row.get("threat_is_tor") in [True, 1, 'true', 'True']:
+                reasons.append("Known Tor Exit Node (threat_is_tor=True)")
+
+            if row.get("threat_is_proxy") in [True, 1, 'true', 'True']:
+                reasons.append("Known Public Proxy (threat_is_proxy=True)")
             
             if reasons:
                 anomalies.append({

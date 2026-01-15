@@ -1,13 +1,11 @@
 import os
 import json
 import logging
-import psycopg2
-from psycopg2 import pool
-from contextlib import contextmanager
 import pandas as pd
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from analyzer import TracerouteAnalyzer
+from database import init_db_pool, get_db_connection
 
 # --- Logging Configuration ---
 logging.basicConfig(
@@ -30,47 +28,8 @@ MCP_PORT = int(os.getenv("MCP_PORT", 8000))
 # Initialize FastMCP
 mcp = FastMCP(name="Traceroute-Analyser", host=MCP_HOST, port=MCP_PORT)
 
-# --- Global State ---
-_db_pool = None
-
 # --- Initialization ---
-def init_resources():
-    """Initialize database pool."""
-    global _db_pool
-    
-    # Init DB Pool
-    try:
-        if not _db_pool:
-            _db_pool = psycopg2.pool.SimpleConnectionPool(
-                minconn=1,
-                maxconn=20,
-                host=DB_HOST,
-                port=DB_PORT,
-                database=DB_NAME,
-                user=DB_USER,
-                password=DB_PASSWORD
-            )
-            logger.info("Database connection pool initialized.")
-    except Exception as e:
-        logger.error(f"Failed to initialize database pool: {e}")
-
-# Call init immediately
-init_resources()
-
-# --- Database Helper ---
-@contextmanager
-def get_db_connection():
-    """Yields a connection from the pool and ensures it's returned."""
-    if _db_pool is None:
-        init_resources()
-        if _db_pool is None:
-            raise Exception("Database pool is not initialized.")
-    
-    conn = _db_pool.getconn()
-    try:
-        yield conn
-    finally:
-        _db_pool.putconn(conn)
+init_db_pool(DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD)
 
 # Initialize Analyzer with DB connection context manager
 analyzer = TracerouteAnalyzer(get_db_connection)
